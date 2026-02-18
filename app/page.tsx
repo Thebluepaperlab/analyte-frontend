@@ -1,26 +1,59 @@
 "use client";
-import React, { useState } from 'react';
-import { 
-  ShieldCheck, AlertTriangle, Scan, Activity, 
-  Upload, Globe, Zap, Database, Cpu, Crosshair 
+import React, { useState, useCallback, useEffect, useRef } from 'react';
+import {
+  AlertTriangle, Scan,
+  Globe, Zap, Cpu,
 } from 'lucide-react';
 
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'https://analyte-mvp.onrender.com/analyze';
+const MAX_LOGS = 5;
+
+interface AnalysisResult {
+  lead_detected: boolean;
+  status: string;
+  fluorescence_pct: number;
+}
+
+function isAnalysisResult(data: unknown): data is AnalysisResult {
+  if (typeof data !== 'object' || data === null) return false;
+  const d = data as Record<string, unknown>;
+  return (
+    typeof d.lead_detected === 'boolean' &&
+    typeof d.status === 'string' &&
+    typeof d.fluorescence_pct === 'number'
+  );
+}
+
 export default function AnalyteCommandCentre() {
-  const [result, setResult] = useState(null);
+  const [result, setResult] = useState<AnalysisResult | null>(null);
   const [loading, setLoading] = useState(false);
-  const [preview, setPreview] = useState(null);
-  const [logs, setLogs] = useState(["SYSTEM_READY", "WAITING_FOR_UPLINK..."]);
+  const [error, setError] = useState<string | null>(null);
+  const [logs, setLogs] = useState<string[]>(["SYSTEM_READY", "WAITING_FOR_UPLINK..."]);
+  const previewUrlRef = useRef<string | null>(null);
 
-  const addLog = (msg) => {
-    setLogs(prev => [`[${new Date().toLocaleTimeString()}] ${msg}`, ...prev].slice(0, 5));
-  };
+  useEffect(() => {
+    return () => {
+      if (previewUrlRef.current) {
+        URL.revokeObjectURL(previewUrlRef.current);
+      }
+    };
+  }, []);
 
-  const handleFileUpload = async (e) => {
-    const file = e.target.files[0];
+  const addLog = useCallback((msg: string) => {
+    setLogs(prev => [`[${new Date().toLocaleTimeString()}] ${msg}`, ...prev].slice(0, MAX_LOGS));
+  }, []);
+
+  const handleFileUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
     if (!file) return;
 
-    setPreview(URL.createObjectURL(file));
+    if (previewUrlRef.current) {
+      URL.revokeObjectURL(previewUrlRef.current);
+    }
+    const objectUrl = URL.createObjectURL(file);
+    previewUrlRef.current = objectUrl;
     setLoading(true);
+    setError(null);
     addLog("INITIATING MOLECULAR SCAN...");
     addLog("UPLOADING DATA TO RENDER_CLOUD...");
 
@@ -28,20 +61,41 @@ export default function AnalyteCommandCentre() {
     formData.append('file', file);
 
     try {
-      const response = await fetch('https://analyte-mvp.onrender.com/analyze', {
+      const response = await fetch(API_URL, {
         method: 'POST',
         body: formData,
       });
-      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(`Server responded with status ${response.status}`);
+      }
+
+      const data: unknown = await response.json();
+
+      if (!isAnalysisResult(data)) {
+        throw new Error('Unexpected response format from server');
+      }
+
       setResult(data);
       addLog("DECODING FLUORESCENCE_SIGNATURE...");
       addLog("ANALYSIS_COMPLETE.");
-    } catch (error) {
-      addLog("ERROR: UPLINK_TIMEOUT");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown error';
+      setError(message);
+      addLog(`ERROR: ${message.toUpperCase()}`);
     } finally {
       setLoading(false);
     }
-  };
+  }, [addLog]);
+
+  const handleReset = useCallback(() => {
+    setResult(null);
+    setError(null);
+    if (previewUrlRef.current) {
+      URL.revokeObjectURL(previewUrlRef.current);
+      previewUrlRef.current = null;
+    }
+  }, []);
 
   return (
     <div className="min-h-screen bg-[#02040a] text-cyan-50 font-mono selection:bg-cyan-500/30 overflow-hidden relative">
@@ -78,10 +132,10 @@ export default function AnalyteCommandCentre() {
                  <p className="flex items-center gap-2 text-gray-500"><span className="w-2 h-2 rounded-full bg-green-500"></span> MUMBAI: SAFE</p>
               </div>
             </div>
-            
+
             {/* MOCK MAP SVG */}
             <div className="absolute inset-0 flex items-center justify-center pointer-events-none opacity-30">
-              <svg viewBox="0 0 400 500" className="w-[80%] h-[80%]">
+              <svg viewBox="0 0 400 500" className="w-[80%] h-[80%]" aria-hidden="true">
                 <path d="M150 50 L250 100 L300 300 L250 450 L100 400 L50 200 Z" fill="none" stroke="#0891b2" strokeWidth="2" strokeDasharray="5 5" />
               </svg>
             </div>
@@ -98,12 +152,12 @@ export default function AnalyteCommandCentre() {
         {/* RIGHT COLUMN: SCANNER */}
         <div className="col-span-12 lg:col-span-5 flex flex-col gap-6">
           <div className="flex-1 bg-gradient-to-b from-[#0B1120] to-black border border-cyan-500/20 rounded-lg p-6 flex flex-col items-center justify-center text-center">
-            
-            {!result && !loading && (
-              <label className="w-full h-full flex flex-col items-center justify-center cursor-pointer group">
+
+            {!result && !loading && !error && (
+              <label className="w-full h-full flex flex-col items-center justify-center cursor-pointer group" aria-label="Upload file for spectral scan">
                 <Scan size={64} className="text-cyan-900 group-hover:text-cyan-500 transition-all mb-4" />
                 <p className="text-xs font-bold tracking-[0.3em] uppercase">Initialize_Spectral_Scan</p>
-                <input type="file" className="hidden" onChange={handleFileUpload} />
+                <input type="file" className="hidden" onChange={handleFileUpload} accept="image/*" />
               </label>
             )}
 
@@ -111,6 +165,14 @@ export default function AnalyteCommandCentre() {
               <div className="space-y-4">
                 <div className="w-16 h-16 border-4 border-cyan-500 border-t-transparent rounded-full animate-spin mx-auto"></div>
                 <p className="text-xs animate-pulse tracking-widest">ANALYZING_MOLECULAR_DATA...</p>
+              </div>
+            )}
+
+            {error && !loading && (
+              <div className="w-full space-y-4">
+                <AlertTriangle size={48} className="text-red-500 mx-auto" />
+                <p className="text-xs text-red-400 tracking-widest uppercase">{error}</p>
+                <button onClick={handleReset} className="text-[10px] text-cyan-600 hover:text-cyan-400 underline uppercase tracking-widest">Retry Scan</button>
               </div>
             )}
 
@@ -124,7 +186,7 @@ export default function AnalyteCommandCentre() {
                   <p className="text-[10px] mb-2 uppercase text-gray-500">Fluorescence Density</p>
                   <p className="text-2xl font-bold">{result.fluorescence_pct}%</p>
                 </div>
-                <button onClick={() => {setResult(null); setPreview(null);}} className="text-[10px] text-cyan-600 hover:text-cyan-400 underline uppercase tracking-widest">Reset Scan</button>
+                <button onClick={handleReset} className="text-[10px] text-cyan-600 hover:text-cyan-400 underline uppercase tracking-widest">Reset Scan</button>
               </div>
             )}
           </div>
